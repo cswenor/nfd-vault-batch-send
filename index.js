@@ -7,15 +7,15 @@ const algosdk = require('algosdk');
 const Bottleneck = require('bottleneck');
 const createCsvWriter = require('csv-writer').createObjectCsvWriter;
 
-const API_BASE_URL = 'https://api.nf.domains';
+const API_BASE_URL = 'https://api.testnet.nf.domains';
 
-const ASSET_ID = 1285225688;
+const ASSET_ID = 558991721;
 
 
 
 const mnemonic = process.env.ALGO_WALLET_MNEMONIC;
 const signerAccount = algosdk.mnemonicToSecretKey(mnemonic);
-const SENDER_ADDRESS = 'LZYGPFUMRE7FKOUFA72EJN5OZ3M5VJJQAJZR7IMRUSMPI6YB6MHTQND6BQ';
+const SENDER_ADDRESS = signerAccount.addr;
 
 // Hardcoded variables for easy editing
 const algodToken = ""; // Your Algod API token
@@ -65,28 +65,43 @@ async function processNFDs(paymentList) {
     return allTransactions;
 }
 
-async function signAndSendTransaction(transaction) {
-    try {
-        const signedTxn = algosdk.signTransaction(transaction, signerAccount.sk);
-        const { txId } = await algodClient.sendRawTransaction(signedTxn.blob).do();
-        const confirmedTxn = await algosdk.waitForConfirmation(algodClient, txId, 4);
-        return { success: true, txId, confirmedRound: confirmedTxn['confirmed-round'] };
-    } catch (error) {
-        console.error('Error signing or sending transaction:', error);
-        return { success: false, error: error.message };
+async function signAndSendAllTransactions(allTransactions) {
+    const transactionPromises = [];
+
+    for (const { payment, encodedTransactions } of allTransactions) {
+        const unsignedTxns = encodedTransactions.map(transaction => {
+            return algosdk.decodeUnsignedTransaction(transaction);
+        });
+
+        // Sign all transactions in the group
+        const signedTxns = unsignedTxns.map(txn => algosdk.signTransaction(txn, signerAccount.sk).blob);
+
+        // Create a promise for sending the group of transactions
+        const transactionPromise = algodClient.sendRawTransaction(signedTxns).do()
+            .then(async ({ txId }) => {
+                const confirmedTxn = await algosdk.waitForConfirmation(algodClient, txId, 4);
+                return { payment, success: true, txId, confirmedRound: confirmedTxn['confirmed-round'] };
+            })
+            .catch(error => {
+                console.error('Error signing or sending transactions:', error);
+                return { payment, success: false, error: error.message };
+            });
+
+        transactionPromises.push(transactionPromise);
     }
+
+    // Wait for all transactions to complete
+    const results = await Promise.all(transactionPromises);
+
+    // Separate confirmed and failed transactions
+    const confirmedTransactions = results.filter(result => result.success);
+    const failedTransactions = results.filter(result => !result.success);
+
+    return { confirmedTransactions, failedTransactions };
 }
 
-async function signAndSendAllTransactions(allTransactions) {
-    const confirmedTransactions = [];
-    for (const { payment, encodedTransactions } of allTransactions) {
-        for (const transaction of encodedTransactions) {
-            const confirmation = await signAndSendTransaction(transaction);
-            confirmedTransactions.push({ payment, confirmation });
-        }
-    }
-    return confirmedTransactions;
-}
+
+
 
 async function outputFailedTransactions(failedTransactions) {
     const csvWriter = createCsvWriter({
