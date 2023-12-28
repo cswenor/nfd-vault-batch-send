@@ -30,6 +30,11 @@ const limiter = new Bottleneck({
     minTime: 200 // Roughly 300 calls per minute
 });
 
+const algodLimiter = new Bottleneck({
+    minTime: 10 // Limit to 100 transactions per second
+});
+
+
 function encodeNFDTransactionsArray(transactionsArray) {
     return transactionsArray.map(([_type, txn]) => {
       return new Uint8Array(Buffer.from(txn, 'base64'));
@@ -77,7 +82,7 @@ async function signAndSendAllTransactions(allTransactions) {
         const signedTxns = unsignedTxns.map(txn => algosdk.signTransaction(txn, signerAccount.sk).blob);
 
         // Create a promise for sending the group of transactions
-        const transactionPromise = algodClient.sendRawTransaction(signedTxns).do()
+        const transactionPromise = algodLimiter.schedule(() => algodClient.sendRawTransaction(signedTxns).do())
             .then(async ({ txId }) => {
                 const confirmedTxn = await algosdk.waitForConfirmation(algodClient, txId, 4);
                 return { payment, success: true, txId, confirmedRound: confirmedTxn['confirmed-round'] };
